@@ -3,10 +3,10 @@ fn main() {
     let from_string = semiring::free::FreeSemiring::from;
     let a = from_string("A");
     let b = from_string("B");
-    let f = | s | match s {
+    let f = |s| match s {
         "A" => 1,
         "B" => 2,
-        _   => 3,
+        _ => 3,
     };
     println!("{}", a.mul(&b).eval(&f));
 }
@@ -52,16 +52,11 @@ mod semiring {
             rc: Rc<FS<T>>,
         }
 
-        impl<T> Deref for FreeSemiring<T> {
-            type Target = FS<T>;
-            fn deref(&self) -> &Self::Target {
-                &self.rc.deref()
-            }
-        }
-
         impl<T> From<T> for FreeSemiring<T> {
             fn from(t: T) -> FreeSemiring<T> {
-                FreeSemiring { rc: Rc::new(FS::Val(t)) }
+                FreeSemiring {
+                    rc: Rc::new(FS::Val(t)),
+                }
             }
         }
 
@@ -79,33 +74,18 @@ mod semiring {
                 FreeSemiring::from(FS::One)
             }
             fn add(&self, other: &Self) -> Self {
-                free_operation(Op::Add, self, other)
+                match (self.rc.deref(), other.rc.deref()) {
+                    (FS::Zero, _) => other.clone(),
+                    (_, FS::Zero) => self.clone(),
+                    (_, _) => FreeSemiring::from(FS::Add(self.clone(), other.clone()))
+                }
             }
             fn mul(&self, other: &Self) -> Self {
-                free_operation(Op::Mul, self, other)
-            }
-        }
-
-        enum Op {
-            Add,
-            Mul,
-        }
-
-        fn free_operation<T: Clone>(
-            op: Op,
-            left: &FreeSemiring<T>,
-            right: &FreeSemiring<T>,
-        ) -> FreeSemiring<T> {
-            let op = match op {
-                Op::Add => FS::Add,
-                Op::Mul => FS::Mul,
-            };
-            match **left {
-                FS::Zero => right.clone(),
-                _ => match **right {
-                    FS::Zero => left.clone(),
-                    _ => FreeSemiring::from(op(left.clone(), right.clone())),
-                },
+                match (self.rc.deref(), other.rc.deref()) {
+                    (FS::One, _) => other.clone(),
+                    (_, FS::One) => self.clone(),
+                    (_, _) => FreeSemiring::from(FS::Mul(self.clone(), other.clone()))
+                }
             }
         }
 
@@ -115,15 +95,39 @@ mod semiring {
                 S: Semiring,
                 F: Fn(T) -> S,
             {
-                match **self {
+                match self.rc.deref() {
                     FS::Zero => Semiring::zero(),
                     FS::One => Semiring::one(),
-                    FS::Val(t) => f(t),
+                    FS::Val(t) => f(*t),
                     FS::Add(ref left, ref right) => left.eval(f).add(&right.eval(f)),
                     FS::Mul(ref left, ref right) => left.eval(f).mul(&right.eval(f)),
                 }
             }
         }
 
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+            #[test]
+            fn free_semiring() {
+                let from_string = FreeSemiring::from;
+                let zero = FreeSemiring::zero();
+                let one = FreeSemiring::one();
+                let a = from_string("A");
+                let b = from_string("B");
+                let f = |s| match s {
+                    "A" => 2,
+                    "B" => 3,
+                    _ => 7,
+                };
+                assert_eq!(a.add(&b).eval(&f), 5);
+                assert_eq!(a.mul(&b).eval(&f), 6);
+                assert_eq!(a.add(&zero).eval(&f), 2);
+                assert_eq!(zero.add(&a).eval(&f), 2);
+                assert_eq!(a.mul(&one).eval(&f), 2);
+                assert_eq!(one.mul(&a).eval(&f), 2);
+                assert_eq!(a.add(&one).eval(&f), 3);
+            }
+        }
     }
 }
