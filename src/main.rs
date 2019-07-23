@@ -1,52 +1,45 @@
 fn main() {
-    let a = Foo { val: 3 };
-    let b = a.foo();
-    println!("{:?}", b);
-}
-
-struct Foo {
-    val: i32,
-}
-
-impl Foo {
-    fn foo(&self) -> i32 {
-        self.val
-    }
+    use crate::semiring::Semiring;
+    let from_string = semiring::free::FreeSemiring::from;
+    let a = from_string("A");
+    let b = from_string("B");
+    let f = | s | match s {
+        "A" => 1,
+        "B" => 2,
+        _   => 3,
+    };
+    println!("{}", a.mul(&b).eval(&f));
 }
 
 mod semiring {
-    use std::ops::Add;
-    use std::ops::Mul;
-
-    trait Zero {
-        type Output;
-        fn zero() -> Self::Output;
+    pub trait Semiring {
+        fn add(&self, other: &Self) -> Self;
+        fn mul(&self, other: &Self) -> Self;
+        fn zero() -> Self;
+        fn one() -> Self;
     }
 
-    trait One {
-        type Output;
-        fn one() -> Self::Output;
+    impl Semiring for i32 {
+        fn add(&self, other: &Self) -> Self {
+            self + other
+        }
+        fn mul(&self, other: &Self) -> Self {
+            self * other
+        }
+        fn zero() -> Self {
+            0
+        }
+        fn one() -> Self {
+            1
+        }
     }
 
-    // Sized required by Add and Mul
-    trait Semiring<Output = Self>:
-        Sized
-        + Add<Output = Output>
-        + Mul<Output = Output>
-        + Zero<Output = Output>
-        + One<Output = Output>
-    {
-    }
-
-    // type Interpretation = Fn T ->
-
-    mod free {
-        // use std::clone::Clone;
-        use super::{Add,Mul,Zero,One,Semiring};
+    pub mod free {
+        use super::Semiring;
         use std::ops::Deref;
         use std::rc::Rc;
 
-        enum FS<T> {
+        pub enum FS<T> {
             One,
             Zero,
             Val(T),
@@ -55,7 +48,7 @@ mod semiring {
         }
 
         #[derive(Clone)]
-        struct FreeSemiring<T> {
+        pub struct FreeSemiring<T> {
             rc: Rc<FS<T>>,
         }
 
@@ -66,23 +59,30 @@ mod semiring {
             }
         }
 
+        impl<T> From<T> for FreeSemiring<T> {
+            fn from(t: T) -> FreeSemiring<T> {
+                FreeSemiring { rc: Rc::new(FS::Val(t)) }
+            }
+        }
+
         impl<T> From<FS<T>> for FreeSemiring<T> {
             fn from(fs: FS<T>) -> FreeSemiring<T> {
                 FreeSemiring { rc: Rc::new(fs) }
             }
         }
 
-        impl<T> Zero for &FreeSemiring<T> {
-            type Output = FreeSemiring<T>;
-            fn zero() -> Self::Output {
+        impl<T: Clone> Semiring for FreeSemiring<T> {
+            fn zero() -> Self {
                 FreeSemiring::from(FS::Zero)
             }
-        }
-
-        impl<T> One for &FreeSemiring<T> {
-            type Output = FreeSemiring<T>;
-            fn one() -> Self::Output {
+            fn one() -> Self {
                 FreeSemiring::from(FS::One)
+            }
+            fn add(&self, other: &Self) -> Self {
+                free_operation(Op::Add, self, other)
+            }
+            fn mul(&self, other: &Self) -> Self {
+                free_operation(Op::Mul, self, other)
             }
         }
 
@@ -109,29 +109,21 @@ mod semiring {
             }
         }
 
-        // impl<T: Clone> Add for FreeSemiring<T>
-
-        impl<T: Clone> Add for &FreeSemiring<T> {
-            type Output = FreeSemiring<T>;
-            fn add(self, other: Self) -> Self::Output {
-                free_operation(Op::Add, self, other)
+        impl<T: Copy> FreeSemiring<T> {
+            pub fn eval<S, F>(&self, f: &F) -> S
+            where
+                S: Semiring,
+                F: Fn(T) -> S,
+            {
+                match **self {
+                    FS::Zero => Semiring::zero(),
+                    FS::One => Semiring::one(),
+                    FS::Val(t) => f(t),
+                    FS::Add(ref left, ref right) => left.eval(f).add(&right.eval(f)),
+                    FS::Mul(ref left, ref right) => left.eval(f).mul(&right.eval(f)),
+                }
             }
         }
-
-        impl<T: Clone> Mul for &FreeSemiring<T> {
-            type Output = FreeSemiring<T>;
-            fn mul(self, other: Self) -> Self::Output {
-                free_operation(Op::Mul, self, other)
-            }
-        }
-
-        impl<T: Clone> Semiring<FreeSemiring<T>> for &FreeSemiring<T> {}
-
-        // impl<T: Clone + Sized> FreeSemiring<T> {
-        //     fn eval<S: Sized>(&self, interpretation: Fn(T) -> S) -> S {
-        //         interpretation(&Self::zero())
-        //     }
-        // }
 
     }
 }
