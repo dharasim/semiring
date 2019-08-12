@@ -1,7 +1,192 @@
+#![allow(dead_code)]
+
 fn main() {}
 
+mod lazymap {
+    use std::collections::HashMap;
+    use std::hash::Hash;
+
+    struct LazyMap<K,V,F> {
+        map: HashMap<K,V>,
+        f: F,
+    }
+
+    impl<K: Eq + Hash + Copy, V, F: Fn(&K) -> Option<V>> LazyMap<K,V,F> {
+        fn get(&mut self, k: &K) -> Option<&V> {
+            if !self.map.contains_key(k) {
+                let v = (self.f)(k)?;
+                self.map.insert(*k, v);
+            }
+            self.map.get(k)
+        }
+    }
+
+    #[test]
+    fn fibo_test() {
+        let mut fibs = HashMap::new();
+        fibs.insert(0, 0);
+        fibs.insert(1, 1);
+
+        let big_fib = fibo(&mut fibs, &50);
+        println!("fibo(50) = {}", big_fib);
+
+        let true_fibs = [0,1,1,2,3,5,8,13,21,34,55,89,144].to_vec();
+        let my_fibs: Vec<i64> = (0..true_fibs.len()).map(|k| fibo(&mut fibs, &(k as i64))).collect();
+        assert_eq!(
+            true_fibs,
+            my_fibs
+        );
+
+    }
+
+    fn fibo(map: &mut HashMap<i64,i64>, k: &i64) -> i64 {
+        if !map.contains_key(k) {
+            let n = fibo(map, &(k-1)) + fibo(map, &(k-2));
+            map.insert(*k, n);
+            n
+        } else {
+            *map.get(k).unwrap()
+        }
+    }
+}
+
+mod parser {
+    use std::hash::Hash;
+    use std::collections::HashMap;
+    use crate::semiring::Semiring;
+
+    pub trait Parser {
+        type Category: Clone + Eq + Hash;
+        type Score: Semiring;
+        fn start(&self) -> &Self::Category;
+        fn is_terminal(&self, c: &Self::Category) -> bool;
+        fn unary_completions(&self, rhs: &Self::Category) -> HashMap<Self::Category, Self::Score>;
+        fn binary_completions(
+            &self,
+            rhs1: &Self::Category,
+            rhs2: &Self::Category,
+        ) -> HashMap<Self::Category, Self::Score>;
+
+        fn parse(&self, terminals: &[Self::Category]) -> Self::Score {
+            let n = terminals.len();
+            let mut chart: Vec<Vec<HashMap<Self::Category,Self::Score>>> = vec![vec![HashMap::new(); n]; n];
+
+            for (i, t) in terminals.iter().enumerate() {
+                chart[i][i].insert(t.clone(), Semiring::one());
+                union_with_mut(&mut chart[i][i], self.unary_completions(t), Semiring::add)
+            }
+
+            for l in 1..n {
+                for i in 0..n-l {
+                    let j = i + l;
+                    for k in i..j {
+                        // split mutable ref to chart into multiple mutable refs of cells
+                        // kp1 means k+1
+                        let (cells_start_in_i, cells_start_in_kp1) = get2_mut(&mut chart, i, k+1);
+                        let (cell_ik, cell_ij) = get2_mut(cells_start_in_i, k, j);
+                        let cell_kp1j = &cells_start_in_kp1[j];
+
+                        for (rhs1, s1) in cell_ik.iter() {
+                            for (rhs2, s2) in cell_kp1j.iter() {
+                                for (lhs, s) in self.binary_completions(rhs1, rhs2) {
+                                    if let Some(ss) = cell_ij.get_mut(&lhs) {
+                                        *ss = ss.add(&s.mul(s1).mul(s2));
+                                    } else {
+                                        cell_ij.insert(lhs, s.mul(s1).mul(s2));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            chart[0][n-1].remove(self.start()).unwrap_or(Semiring::zero())
+        }
+    }
+
+    fn union_with_mut<K,V,F>(one: &mut HashMap<K,V>, two: HashMap<K,V>, f: F) 
+    where K: Eq + Hash, F: Fn(&V,&V) -> V {
+        for (k, v2) in two {
+            if let Some(v1) = one.get_mut(&k) {
+                *v1 = f(&v1, &v2);
+            } else {
+                one.insert(k, v2);
+            }
+        }
+    }
+
+    #[test]
+    fn test_union_with_mut() {
+        let mut map1: HashMap<_,_> = [(1, 2), (3, 4)].to_vec().into_iter().collect();
+        let map2: HashMap<_,_> = [(1, 10), (5, 6)].to_vec().into_iter().collect();
+        union_with_mut(&mut map1, map2, |a,b| a+b);
+        assert_eq!(map1, [(1, 12), (3, 4), (5, 6)].to_vec().into_iter().collect());
+    }
+
+    fn get2_mut<T>(slice: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
+        let (_part1, rest) = slice.split_at_mut(i);
+        let (part2, part3) = rest.split_at_mut(j-i);
+        (part2.first_mut().unwrap(), part3.first_mut().unwrap())
+    }
+
+    #[test]
+    fn test_get2_mut() {
+        let mut v = [0,10,20,30,40];
+        let i = 1;
+        let j = 3;
+        let (a, b) = get2_mut(&mut v, i, j);
+        *a += i;
+        *b += j;
+        assert_eq!(v, [0,11,20,33,40]);
+    }
+
+    #[test]
+    fn test_parse() {
+        #[derive(PartialEq, Eq, Hash, Copy, Clone)]
+        enum Symbol { Start, Leaf };
+        use Symbol::{Start, Leaf};
+
+        struct BinaryTreeCountParser;
+
+        impl Parser for BinaryTreeCountParser {
+            type Category = Symbol;
+            type Score = i32;
+            fn start(&self) -> &Self::Category {
+                &Start
+            }
+            fn is_terminal(&self, c: &Self::Category) -> bool {
+                c == &Leaf
+            }
+            fn unary_completions(&self, rhs: &Self::Category) -> HashMap<Self::Category, Self::Score> {
+                match rhs {
+                    Start => HashMap::new(),
+                    Leaf => [(Start, 1)].to_vec().into_iter().collect()
+                }
+            }
+            fn binary_completions(
+                &self,
+                rhs1: &Self::Category,
+                rhs2: &Self::Category,
+            ) -> HashMap<Self::Category, Self::Score> {
+                match (rhs1, rhs2) {
+                    (Start, Start) => [(Start, 1)].to_vec().into_iter().collect(),
+                    _ => HashMap::new()
+                }
+            }
+        }
+
+        let numbers_of_binary_trees: Vec<_> = (1..=10).into_iter().map(|n| BinaryTreeCountParser.parse(&vec![Leaf; n])).collect();
+        let catalan_numbers = [1, 1, 2, 5, 14, 42, 132, 429, 1430, 4862].to_vec();
+        assert_eq!(
+            numbers_of_binary_trees,
+            catalan_numbers
+        )
+    }
+}
+
 mod semiring {
-    pub trait Semiring {
+    pub trait Semiring: Clone {
         fn add(&self, other: &Self) -> Self;
         fn mul(&self, other: &Self) -> Self;
         fn zero() -> Self;
@@ -33,7 +218,7 @@ mod semiring {
     }
 
     pub mod free {
-        use super::{Semiring,FS};
+        use super::{Semiring, FS};
         use std::ops::Deref;
         use std::rc::Rc;
 
@@ -120,13 +305,13 @@ mod semiring {
             }
         }
     }
-    
+
     pub mod dist {
-        use super::{Semiring,FS};
+        use super::{Semiring, FS};
         use std::ops::Deref;
-        use std::rc::Rc;
         use std::ops::Div;
-        
+        use std::rc::Rc;
+
         extern crate rand;
         use rand::distributions::{Bernoulli, Distribution};
 
